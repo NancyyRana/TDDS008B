@@ -1,10 +1,11 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+import sqlite3
 
 app = FastAPI(
     title="Student Management API",
-    description="REST API built using FastAPI",
-    version="1.0.0"
+    description="REST API built using FastAPI with SQLite Database",
+    version="2.0.0"
 )
 
 
@@ -21,25 +22,37 @@ class Student(BaseModel):
 
 
 # ==============================
-# Temporary Student Data
+# Database Connection
 # ==============================
 
-students = [
-    {
-        "id": 1,
-        "name": "Rahul",
-        "age": 20,
-        "course": "Data Science",
-        "email": "rahul@gmail.com"
-    },
-    {
-        "id": 2,
-        "name": "Priya",
-        "age": 21,
-        "course": "Computer Science",
-        "email": "priya@gmail.com"
-    }
-]
+def get_connection():
+    connection = sqlite3.connect("students.db")
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
+# ==============================
+# Create Database Table
+# ==============================
+
+def create_table():
+    connection = get_connection()
+
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS students (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            age INTEGER NOT NULL,
+            course TEXT NOT NULL,
+            email TEXT NOT NULL
+        )
+    """)
+
+    connection.commit()
+    connection.close()
+
+
+create_table()
 
 
 # ==============================
@@ -59,7 +72,16 @@ def home():
 
 @app.get("/students")
 def get_students():
-    return students
+
+    connection = get_connection()
+
+    students = connection.execute(
+        "SELECT * FROM students"
+    ).fetchall()
+
+    connection.close()
+
+    return [dict(student) for student in students]
 
 
 # ==============================
@@ -69,14 +91,22 @@ def get_students():
 @app.get("/students/{student_id}")
 def get_student(student_id: int):
 
-    for student in students:
-        if student["id"] == student_id:
-            return student
+    connection = get_connection()
 
-    raise HTTPException(
-        status_code=404,
-        detail="Student not found"
-    )
+    student = connection.execute(
+        "SELECT * FROM students WHERE id = ?",
+        (student_id,)
+    ).fetchone()
+
+    connection.close()
+
+    if student is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Student not found"
+        )
+
+    return dict(student)
 
 
 # ==============================
@@ -86,15 +116,34 @@ def get_student(student_id: int):
 @app.post("/students")
 def create_student(student: Student):
 
-    # Check if ID already exists
-    for existing_student in students:
-        if existing_student["id"] == student.id:
-            raise HTTPException(
-                status_code=400,
-                detail="Student ID already exists"
-            )
+    connection = get_connection()
 
-    students.append(student.model_dump())
+    existing_student = connection.execute(
+        "SELECT * FROM students WHERE id = ?",
+        (student.id,)
+    ).fetchone()
+
+    if existing_student:
+        connection.close()
+
+        raise HTTPException(
+            status_code=400,
+            detail="Student ID already exists"
+        )
+
+    connection.execute("""
+        INSERT INTO students (id, name, age, course, email)
+        VALUES (?, ?, ?, ?, ?)
+    """, (
+        student.id,
+        student.name,
+        student.age,
+        student.course,
+        student.email
+    ))
+
+    connection.commit()
+    connection.close()
 
     return {
         "message": "Student created successfully",
@@ -112,21 +161,41 @@ def update_student(
     updated_student: Student
 ):
 
-    for index, student in enumerate(students):
+    connection = get_connection()
 
-        if student["id"] == student_id:
+    existing_student = connection.execute(
+        "SELECT * FROM students WHERE id = ?",
+        (student_id,)
+    ).fetchone()
 
-            students[index] = updated_student.model_dump()
+    if existing_student is None:
+        connection.close()
 
-            return {
-                "message": "Student updated successfully",
-                "student": updated_student
-            }
+        raise HTTPException(
+            status_code=404,
+            detail="Student not found"
+        )
 
-    raise HTTPException(
-        status_code=404,
-        detail="Student not found"
-    )
+    connection.execute("""
+        UPDATE students
+        SET id = ?, name = ?, age = ?, course = ?, email = ?
+        WHERE id = ?
+    """, (
+        updated_student.id,
+        updated_student.name,
+        updated_student.age,
+        updated_student.course,
+        updated_student.email,
+        student_id
+    ))
+
+    connection.commit()
+    connection.close()
+
+    return {
+        "message": "Student updated successfully",
+        "student": updated_student
+    }
 
 
 # ==============================
@@ -136,18 +205,30 @@ def update_student(
 @app.delete("/students/{student_id}")
 def delete_student(student_id: int):
 
-    for index, student in enumerate(students):
+    connection = get_connection()
 
-        if student["id"] == student_id:
+    student = connection.execute(
+        "SELECT * FROM students WHERE id = ?",
+        (student_id,)
+    ).fetchone()
 
-            deleted_student = students.pop(index)
+    if student is None:
+        connection.close()
 
-            return {
-                "message": "Student deleted successfully",
-                "student": deleted_student
-            }
+        raise HTTPException(
+            status_code=404,
+            detail="Student not found"
+        )
 
-    raise HTTPException(
-        status_code=404,
-        detail="Student not found"
+    connection.execute(
+        "DELETE FROM students WHERE id = ?",
+        (student_id,)
     )
+
+    connection.commit()
+    connection.close()
+
+    return {
+        "message": "Student deleted successfully",
+        "student": dict(student)
+    }
